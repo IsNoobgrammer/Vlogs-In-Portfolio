@@ -2,9 +2,22 @@
 
 2026-04-25
 
-We tried Z-loss. It's what everyone does.
+First, the architecture. Because none of the routing decisions make sense without knowing what we were routing *for*.
 
-You have a Mixture-of-Experts model. Routing logits can explode — high-magnitude logits collapse diversity, every token routes to the same expert, your MoE becomes a very expensive MLP. So you add a Z-loss term: penalize large logit magnitudes. Problem (kind of) solved. Paper ships.
+BiBo's MoE config, finalized April 24, 2025:
+
+```
+1 shared conv expert  (always active, kernel=3 on gate_proj)
+9 routable MLP experts  (top-k=2)
+1 identity/residual expert  (the cheapest possible: near pass-through)
+~4B total params, ~1.5–2B active
+```
+
+The shared expert fires for every token regardless of routing. The 9 MLP experts specialize. The identity expert gives the router a "no-op" option for tokens that don't need any transformation. And the whole thing is designed as a drop-in replacement for the FFN block of any transformer decoder — *"just plug into any decoder layer and it should work."*
+
+With that context: routing stability matters. A lot. If your router logits explode, every token routes to the same expert, your MoE becomes a very expensive dense MLP, and you've wasted all the parameter efficiency you designed for.
+
+So. Z-loss.
 
 Nah.
 
@@ -83,9 +96,35 @@ The fix: after clamping, add a small learnable bias before softmax. Break the sy
 
 That's the kind of edge case that bites you at 2am when the routing distribution collapses and you can't tell if it's the clamp or the aux loss or just a bad batch.
 
+There was also a question about whether the *router itself* should be a convolution. The argument:
+
+> *"Suppose 'book then book lover and book hater'. Standard MLP router looks only at the current token. A conv router looks at 'I love books' and routes to the appropriate expert based on local context."*
+
+A conv router sees a 3-token window. So it doesn't just ask "what is this token?" — it asks "what is this token, given what just came before?" That's a genuinely different routing signal. The memory overhead is `kernel_size × params`, but since the router is small (hidden_dim → num_experts), the cost is acceptable.
+
+We didn't implement the conv router yet either. *"linear vs conv routing — interesting study."* — aloobun.
+
+That's two ideas sitting in TODO comments now.
+
 ## what we're actually doing
 
-Aux loss. The boring answer that's been in every MoE paper since 2017. We're not using Z-loss (gradient noise, fixed coefficient). We're not using dynamic clamping (good idea, unvalidated on our specific setup). We're using a soft load-balancing penalty that we *know* works, on hardware we *know* the characteristics of, for an architecture we're still learning the failure modes of.
+Aux loss. Switch-transformer formulation. The boring answer that's been in every MoE paper since 2017:
+
+```python
+aux_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
+if self.training and self.aux_loss_coef > 0:
+    with torch.no_grad():
+        mask = F.one_hot(top_k_indices, num_classes=self.num_experts).sum(dim=1).float()
+        load = mask.sum(dim=0) / num_tokens
+        prob_mean = routing_weights.sum(dim=0) / num_tokens
+        aux_loss = (load * prob_mean).sum() * self.num_experts * self.aux_loss_coef
+```
+
+`load` is actual expert usage. `prob_mean` is ideal usage. Minimize their correlation → uniform load. The `num_experts` multiplier keeps the aux loss magnitude consistent regardless of expert count. Aloobun implemented this. It's clean. It works.
+
+We're not using Z-loss (gradient noise, fixed coefficient). We're not using dynamic clamping (good idea, unvalidated on our current setup). We're using a penalty we *know* works, on hardware we *know* the characteristics of, for an architecture we're still discovering the failure modes of.
+
+One more thing we added: Dynamic Tanh (DyT) replacing RMSNorm everywhere — post-attention, Q-norm, K-norm, post-FFN. RMSNorm operates over the whole sequence; DyT operates per token individually. Faster. Streaming-compatible. Less communication overhead in distributed settings. Another quiet decision that the architecture will never announce but will show up in throughput.
 
 The philosophy: trust the architecture first. Intervene only with evidence.
 

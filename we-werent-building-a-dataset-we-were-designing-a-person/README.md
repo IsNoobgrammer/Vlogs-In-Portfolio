@@ -8,7 +8,15 @@ That sentence sounds obvious now. But it took a while to understand the distinct
 
 ---
 
-The reference point was Eric Hartford's Samantha dataset. Persona-first fine-tuning: instead of teaching a model *what* to say, you teach it *who to be*. The data follows from the character, not the other way around. Aloobun had already run an experiment — `aloobun/qwen-1_8b-samantha-chat` — fine-tuning Qwen 1.8B on the English Samantha data. His honest assessment:
+The starting point everyone pointed to was **Samvaad** — the AI4Bharat Hinglish conversational dataset. Reasonable. Multi-turn. Accessible. The standard reference in Indic NLP circles.
+
+Aloobun's assessment, March 14, 2024, one sentence:
+
+> *"Dataset like Samvaad look ok but lacks task oriented stuff."*
+
+That was the entire design brief. Samvaad built a *talking* model. We wanted a *thinking* model that talks in Hinglish. Ask a Samvaad-trained model *"Bhai, differential equation solve karne ka best tarika kya hai?"* and you'll get a beautiful dodge. It knows how to chat. It doesn't know how to *solve*.
+
+So we looked at Eric Hartford's Samantha dataset instead. Persona-first fine-tuning: instead of teaching a model *what* to say, you teach it *who to be*. The data follows from the character, not the other way around. Aloobun had already run an experiment — `aloobun/qwen-1_8b-samantha-chat` — fine-tuning Qwen 1.8B on English Samantha data. His honest assessment:
 
 > *"The responses were a bit generic, couldn't get rid of the refusals. Used it for a couple of days straight though."*
 
@@ -48,9 +56,17 @@ Aloobun's proposal for the composition:
 
 *"1k is all we need"* — that optimism. We both knew it would take more.
 
-The DPO idea that emerged and never fully got built: the model must know *which words* to use in Hindi and *which* in English. Not just grammatically — affectively. You say "abhi" not "right now" when you're being casual. You say "thoda sa" not "a little bit" when you're softening something. A small DPO set could align this at a finer level than SFT alone.
+The technique that actually made the task-oriented data have *substance*: the Phi-1 approach. Instead of generating a conversation about a random topic and hoping the model says something accurate, you extract a seed snippet from a real high-quality text, ask the generator to identify the concept in that snippet, generate questions anchored to that concept, then build the conversation from those questions. The output has substance because it's grounded in real content — not because the model was told to "be educational."
+
+The DPO idea that emerged and never got built: the model must know *which words* to use in Hindi and *which* in English — not just grammatically, but *affectively*. You say "abhi" not "right now" when you're being casual. You say "thoda sa" not "a little bit" when you're softening something. A small DPO set could align this at a finer level than SFT alone.
 
 Still the right answer. Still not implemented.
+
+And one thing that almost never gets said: we were actually building *two* datasets. The task-oriented Hinglish one — that's the public artifact, the community contribution we'd push to HuggingFace. The Samantha-style personality dataset was something else entirely.
+
+> *"This is not samantha wala dataset. Samantha wala we'll not share with any other guys first."*
+
+The second one was the secret sauce. The thing that would make BiBo feel different from any other Indic model — not just multilingual, but *personally* multilingual. That one stays internal until the model it's training is ready to speak for itself.
 
 ## what we were really building, tbh
 
