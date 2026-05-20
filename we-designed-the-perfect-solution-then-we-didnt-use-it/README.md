@@ -2,36 +2,36 @@
 
 2026-04-25
 
-First , the architecture. Because none of the routing decisions make sense without knowing what we were routing *for*.
+first , the architecture. because none of the routing decisions make sense without knowing what we were routing *for*.
 
-BiBo's MoE config, finalized April 24, 2025:
+BiBo's MoE config , finalized April 24 , 2025:
 
 ```
-1 shared conv expert  (always active, kernel=3 on gate_proj)
+1 shared conv expert  (always active , kernel=3 on gate_proj)
 9 routable MLP experts  (top-k=2)
-1 identity/residual expert  (the cheapest possible: near pass-through)
-~4B total params, ~1.5–2B active
+1 identity/residual expert  (near pass-through)
+~4B total params , ~1.5–2B active
 ```
 
-The shared expert fires for every token regardless of routing. The 9 MLP experts specialize. The identity expert gives the router a "no-op" option for tokens that don't need any transformation. And the whole thing is designed as a drop-in replacement for the FFN block of any transformer decoder — *"just plug into any decoder layer and it should work."*
+shared expert fires for every token. 9 MLP experts specialize. identity expert gives router a "no-op" option. whole thing is drop-in replacement for FFN block — *"just plug into any decoder layer and it should work."*
 
-With that context: routing stability matters. A lot. If your router logits explode, every token routes to the same expert, your MoE becomes a very expensive dense MLP, and you've wasted all the parameter efficiency you designed for.
+routing stability matters. a lot. router logits explode → every token routes to same expert → MoE becomes expensive dense MLP → wasted all parameter efficiency.
 
-So. Z-loss.
+so. Z-loss.
 
-Nah.
+nah.
 
 ---
 
 ## why Z-loss felt wrong
 
-Z-loss is a blunt instrument. It adds gradient noise. Fixed penalty coefficient for a dynamic problem — your logit distribution at step 100 is not the same as at step 10,000, but the penalty doesn't know that. And the penalty coefficient is *another* hyperparameter you have to tune on top of the router temperature and the load-balancing aux loss weight and everything else.
+blunt instrument. adds gradient noise. fixed penalty for dynamic problem — logit distribution at step 100 is not same as step 10,000. penalty doesn't know that. and it's *another* hyperparameter on top of router temperature and aux loss weight.
 
-When aadi shared a Google AI Studio config with Z-loss baked in , the response was: *"We don't want any Z-loss. It's better if we dynamically cap router logits before bias."*
+when aadi shared a Google AI Studio config with Z-loss baked in , the response was: *"We don't want any Z-loss. better to dynamically cap router logits before bias."*
 
-So we designed dynamic clamping.
+so we designed dynamic clamping.
 
-The idea: instead of a fixed penalty, compute the clamp bounds *from the logit distribution itself* — batch by batch, step by step. No tunable penalty. The bounds adapt to what the logits are actually doing.
+idea: compute clamp bounds *from logit distribution itself* — batch by batch. no tunable penalty. bounds adapt.
 
 ```python
 if self.use_dynamic_clamp:
@@ -47,9 +47,9 @@ if self.use_dynamic_clamp:
     router_logits = torch.clamp(router_logits, min=clamp_min_val.item(), max=clamp_max_val.item())
 ```
 
-Clean. Self-adapting. No hyperparameter for the bounds.
+clean. self-adapting. no hyperparameter.
 
-Then aloobun went further — quantile-based clamping , like a box plot. Clamp to the 25th percentile on the bottom, 85th percentile on the top. Outliers removed. Distribution stabilized. Batch-by-batch.
+then aloobun went further — quantile-based clamping. like a box plot. 25th percentile bottom , 85th top. outliers removed.
 
 ```python
 if self.training and self.config.use_dynamic_logit_clamping:
@@ -59,23 +59,23 @@ if self.training and self.config.use_dynamic_logit_clamping:
     router_logits = torch.clamp(router_logits, min=lower_bound, max=upper_bound)
 ```
 
-This is the good version. Box plot logic applied to neural routing.
+box plot logic on neural routing. this is the good version.
 
-## and then we didn't implement it either
+## and then we didn't implement it
 
-April 27, 2025. After all that design work:
+April 27. after all that design work:
 
 > *"No clamping. At least not for now."*
 
 lol.
 
-The full arc: "Z-loss is bad" → "dynamic clamping is better" → "quantile clamping is even better" → "no clamping at all , let's just see what happens architecturally."
+full arc: "Z-loss is bad" → "dynamic clamping is better" → "quantile clamping is even better" → "no clamping at all , let's see what happens."
 
-This sounds like giving up. It wasn't.
+sounds like giving up. wasn't.
 
-The honest answer was that we needed *actual training runs* to know if logit explosion was even our current problem. You don't add stability interventions before you observe instability. That's premature optimization with extra steps. The architecture hadn't been stressed yet. We didn't know if the logits would even diverge without clamping.
+honest answer: needed *actual training runs* to know if logit explosion was even our problem. don't add stability interventions before you observe instability. premature optimization with extra steps.
 
-So we reverted to aux load-balancing loss — the boring standard approach — and kept clamping as a fallback waiting in the code, commented out, ready for the moment we actually see the problem.
+reverted to aux load-balancing loss — boring standard approach. clamping sitting in code , commented out , waiting.
 
 ```python
 """ No Clamping for Now
@@ -84,31 +84,31 @@ TODO: @aloobun make clamp range dynamic based on mean/median/mode/std of current
 #     router_logits = torch.clamp(router_logits, min=-self.logit_clamp_val, max=self.logit_clamp_val)
 ```
 
-That TODO is still there. The solution is still there. Just waiting.
+that TODO is still there. solution still there. just waiting.
 
-## the thing about MoE routing nobody talks about
+## the edge case nobody talks about
 
-If you clamp all logits to the same value — which a very aggressive clamp might do — `topk` has no way to differentiate. All experts look equally good. Routing becomes random. You've solved logit explosion by creating routing collapse.
+clamp all logits to same value → `topk` can't differentiate → all experts look equally good → routing becomes random → solved logit explosion by creating routing collapse.
 
-The fix: after clamping, add a small learnable bias before softmax. Break the symmetry. Let the model still express preference even in a compressed logit range.
+fix: after clamping , add small learnable bias before softmax. break symmetry.
 
-*"Clamp ke baad small bias then softmax — else suppose it all clamped to same value, how to find most suitable top-k?"*
+*"Clamp ke baad small bias then softmax — else suppose it all clamped to same value , how to find most suitable top-k?"*
 
-That's the kind of edge case that bites you at 2am when the routing distribution collapses and you can't tell if it's the clamp or the aux loss or just a bad batch.
+kind of edge case that bites you at 2am.
 
-There was also a question about whether the *router itself* should be a convolution. The argument:
+also: should the *router itself* be a convolution?
 
-> *"Suppose 'book then book lover and book hater'. Standard MLP router looks only at the current token. A conv router looks at 'I love books' and routes to the appropriate expert based on local context."*
+> *"Suppose 'book then book lover and book hater'. Standard MLP router looks only at current token. conv router looks at 'I love books' and routes to appropriate expert based on local context."*
 
-A conv router sees a 3-token window. So it doesn't just ask "what is this token?" — it asks "what is this token , given what just came before?" That's a genuinely different routing signal. The memory overhead is `kernel_size × params`, but since the router is small (hidden_dim → num_experts), the cost is acceptable.
+conv router sees 3-token window. "what is this token , given what just came before?" genuinely different routing signal.
 
-We didn't implement the conv router yet either. *"linear vs conv routing — interesting study."* — aloobun.
+didn't implement that either. *"linear vs conv routing — interesting study."* — aloobun.
 
-That's two ideas sitting in TODO comments now.
+two ideas in TODO comments now.
 
 ## what we're actually doing
 
-Aux loss. Switch-transformer formulation. The boring answer that's been in every MoE paper since 2017:
+aux loss. switch-transformer formulation. boring answer from every MoE paper since 2017:
 
 ```python
 aux_loss = torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
@@ -120,14 +120,14 @@ if self.training and self.aux_loss_coef > 0:
         aux_loss = (load * prob_mean).sum() * self.num_experts * self.aux_loss_coef
 ```
 
-`load` is actual expert usage. `prob_mean` is ideal usage. Minimize their correlation → uniform load. The `num_experts` multiplier keeps the aux loss magnitude consistent regardless of expert count. Aloobun implemented this. It's clean. It works.
+`load` is actual usage. `prob_mean` is ideal. minimize correlation → uniform load. aloobun implemented this. clean. works.
 
-We're not using Z-loss (gradient noise , fixed coefficient). We're not using dynamic clamping (good idea , unvalidated on our current setup). We're using a penalty we *know* works, on hardware we *know* the characteristics of, for an architecture we're still discovering the failure modes of.
+not using Z-loss. not using dynamic clamping. using penalty we *know* works , on hardware we *know* , for architecture we're still discovering.
 
-One more thing we added: Dynamic Tanh (DyT) replacing RMSNorm everywhere — post-attention, Q-norm, K-norm, post-FFN. RMSNorm operates over the whole sequence; DyT operates per token individually. Faster. Streaming-compatible. Less communication overhead in distributed settings. Another quiet decision that the architecture will never announce but will show up in throughput.
+one more thing: Dynamic Tanh (DyT) replacing RMSNorm everywhere — post-attention , Q-norm , K-norm , post-FFN. RMSNorm operates over whole sequence. DyT per token. faster. streaming-compatible. quiet decision that shows up in throughput.
 
-The philosophy: trust the architecture first. Intervene only with evidence.
+philosophy: trust architecture first. intervene only with evidence.
 
-Dynamic clamping is still the right idea. Just for a later version of us, with more training runs and a clearer picture of what's actually failing.
+dynamic clamping is still the right idea. just for later version of us.
 
-Sometimes the best engineering decision is the TODO comment in the code.
+sometimes the best engineering decision is the TODO comment in the code.
