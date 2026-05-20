@@ -2,7 +2,7 @@
 
 2026-04-25
 
-First, the architecture. Because none of the routing decisions make sense without knowing what we were routing *for*.
+First , the architecture. Because none of the routing decisions make sense without knowing what we were routing *for*.
 
 BiBo's MoE config, finalized April 24, 2025:
 
@@ -27,7 +27,7 @@ Nah.
 
 Z-loss is a blunt instrument. It adds gradient noise. Fixed penalty coefficient for a dynamic problem — your logit distribution at step 100 is not the same as at step 10,000, but the penalty doesn't know that. And the penalty coefficient is *another* hyperparameter you have to tune on top of the router temperature and the load-balancing aux loss weight and everything else.
 
-When aadi shared a Google AI Studio config with Z-loss baked in, the response was direct: *"We don't want any Z-loss. It's better if we dynamically cap router logits before bias."*
+When aadi shared a Google AI Studio config with Z-loss baked in , the response was: *"We don't want any Z-loss. It's better if we dynamically cap router logits before bias."*
 
 So we designed dynamic clamping.
 
@@ -47,9 +47,9 @@ if self.use_dynamic_clamp:
     router_logits = torch.clamp(router_logits, min=clamp_min_val.item(), max=clamp_max_val.item())
 ```
 
-Clean. Elegant. Self-adapting. No hyperparameter for the bounds.
+Clean. Self-adapting. No hyperparameter for the bounds.
 
-Then aloobun went further — quantile-based clamping, like a box plot. Clamp to the 25th percentile on the bottom, 85th percentile on the top. Outliers removed. Distribution stabilized. Batch-by-batch.
+Then aloobun went further — quantile-based clamping , like a box plot. Clamp to the 25th percentile on the bottom, 85th percentile on the top. Outliers removed. Distribution stabilized. Batch-by-batch.
 
 ```python
 if self.training and self.config.use_dynamic_logit_clamping:
@@ -59,7 +59,7 @@ if self.training and self.config.use_dynamic_logit_clamping:
     router_logits = torch.clamp(router_logits, min=lower_bound, max=upper_bound)
 ```
 
-This is the good version. Box plot logic applied to neural routing. Mathematically principled. Practically sound.
+This is the good version. Box plot logic applied to neural routing.
 
 ## and then we didn't implement it either
 
@@ -69,7 +69,7 @@ April 27, 2025. After all that design work:
 
 lol.
 
-The full arc: "Z-loss is bad" → "dynamic clamping is better" → "quantile clamping is even better" → "no clamping at all, let's just see what happens architecturally."
+The full arc: "Z-loss is bad" → "dynamic clamping is better" → "quantile clamping is even better" → "no clamping at all , let's just see what happens architecturally."
 
 This sounds like giving up. It wasn't.
 
@@ -100,7 +100,7 @@ There was also a question about whether the *router itself* should be a convolut
 
 > *"Suppose 'book then book lover and book hater'. Standard MLP router looks only at the current token. A conv router looks at 'I love books' and routes to the appropriate expert based on local context."*
 
-A conv router sees a 3-token window. So it doesn't just ask "what is this token?" — it asks "what is this token, given what just came before?" That's a genuinely different routing signal. The memory overhead is `kernel_size × params`, but since the router is small (hidden_dim → num_experts), the cost is acceptable.
+A conv router sees a 3-token window. So it doesn't just ask "what is this token?" — it asks "what is this token , given what just came before?" That's a genuinely different routing signal. The memory overhead is `kernel_size × params`, but since the router is small (hidden_dim → num_experts), the cost is acceptable.
 
 We didn't implement the conv router yet either. *"linear vs conv routing — interesting study."* — aloobun.
 
@@ -122,7 +122,7 @@ if self.training and self.aux_loss_coef > 0:
 
 `load` is actual expert usage. `prob_mean` is ideal usage. Minimize their correlation → uniform load. The `num_experts` multiplier keeps the aux loss magnitude consistent regardless of expert count. Aloobun implemented this. It's clean. It works.
 
-We're not using Z-loss (gradient noise, fixed coefficient). We're not using dynamic clamping (good idea, unvalidated on our current setup). We're using a penalty we *know* works, on hardware we *know* the characteristics of, for an architecture we're still discovering the failure modes of.
+We're not using Z-loss (gradient noise , fixed coefficient). We're not using dynamic clamping (good idea , unvalidated on our current setup). We're using a penalty we *know* works, on hardware we *know* the characteristics of, for an architecture we're still discovering the failure modes of.
 
 One more thing we added: Dynamic Tanh (DyT) replacing RMSNorm everywhere — post-attention, Q-norm, K-norm, post-FFN. RMSNorm operates over the whole sequence; DyT operates per token individually. Faster. Streaming-compatible. Less communication overhead in distributed settings. Another quiet decision that the architecture will never announce but will show up in throughput.
 
